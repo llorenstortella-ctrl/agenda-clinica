@@ -89,6 +89,21 @@ function fmtDate(dk) {
 }
 
 // =============================================================================
+// DURACIONES — valores por defecto y lectura desde configuracion
+// =============================================================================
+var DEFAULT_DURATIONS = { fisio: 50, nesa: 50, combinadaFisio: 30, combinadaNesa: 20 };
+
+function getDurations(durations) {
+  var d = durations || {};
+  return {
+    fisio:          parseInt(d.fisio, 10)          || DEFAULT_DURATIONS.fisio,
+    nesa:           parseInt(d.nesa, 10)           || DEFAULT_DURATIONS.nesa,
+    combinadaFisio: parseInt(d.combinadaFisio, 10) || DEFAULT_DURATIONS.combinadaFisio,
+    combinadaNesa:  parseInt(d.combinadaNesa, 10)  || DEFAULT_DURATIONS.combinadaNesa,
+  };
+}
+
+// =============================================================================
 // LIMPIEZA DE DUPLICADOS
 // =============================================================================
 function deduplicateApts(apts) {
@@ -475,7 +490,8 @@ export default function App() {
     // Paso 2: eliminar duplicados reales al arrancar
     return deduplicateApts(valid);
   });
-  const [schedule,     setSched] = useState(function() { return LS.get("sched", {}); });
+  const [schedule,     setSched]    = useState(function() { return LS.get("sched", {}); });
+  const [durations,    setDurations] = useState(function() { return LS.get("durations", DEFAULT_DURATIONS); });
 
   useEffect(function() {
     LS.set("apts", appointments);
@@ -485,6 +501,7 @@ export default function App() {
     LS.set("sched", schedule);
     _slotsCache = {}; // Invalidar cache al cambiar horario
   }, [schedule]);
+  useEffect(function() { LS.set("durations", durations); }, [durations]);
 
   // Sincronizacion entre pestanas: si otra pestana escribe en localStorage,
   // actualizamos el estado de esta pestana automaticamente.
@@ -517,13 +534,13 @@ export default function App() {
   if (isPortal) {
     return <PatientPortal appointments={appointments} setApts={setApts} schedule={schedule} />;
   }
-  return <FisioApp appointments={appointments} setApts={setApts} schedule={schedule} setSched={setSched} />;
+  return <FisioApp appointments={appointments} setApts={setApts} schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} />;
 }
 
 // =============================================================================
 // PANEL DEL FISIO
 // =============================================================================
-function FisioApp({ appointments, setApts, schedule, setSched }) {
+function FisioApp({ appointments, setApts, schedule, setSched, durations, setDurations }) {
   const [view,        setView]       = useState("agenda");
   const [selDate,     setSelDate]    = useState(todayKey());
   const [calMonth,    setCalMonth]   = useState(new Date().getMonth());
@@ -592,6 +609,7 @@ function FisioApp({ appointments, setApts, schedule, setSched }) {
   function handleSave() {
     if (saving) return;
     if (!newApt.patient.trim() || !newApt.time) return;
+    if (!newApt.phone || !isValidPhone(newApt.phone)) { setConflict("El WhatsApp del paciente es obligatorio."); return; }
     const dk = newApt.date;
     if (!(schedule[dk] || []).length) { setConflict("Este día no tiene horario configurado."); return; }
 
@@ -894,13 +912,16 @@ function FisioApp({ appointments, setApts, schedule, setSched }) {
               </InputRow>
             </Field>
 
-            <Field label="WhatsApp paciente (opcional)">
+            <Field label="WhatsApp paciente">
               <InputRow>
                 <Ic n="wa" s={18} c="#94a3b8" />
                 <input style={S.inp} placeholder="34600000000" type="tel"
                   value={newApt.phone}
                   onChange={function(e) { setNewApt(function(p) { return Object.assign({}, p, { phone: e.target.value }); }); }} />
               </InputRow>
+              {newApt.phone && !isValidPhone(newApt.phone) && (
+                <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4 }}>Introduce un número válido (ej: 34612345678)</div>
+              )}
             </Field>
 
             <Field label="Tipo de cita">
@@ -988,7 +1009,7 @@ function FisioApp({ appointments, setApts, schedule, setSched }) {
                 Cancelar
               </button>
               <button className="tap" onClick={handleSave}
-                style={Object.assign({}, S.saveBtn, { opacity: (!newApt.patient.trim() || !newApt.time) ? 0.5 : 1 })}>
+                style={Object.assign({}, S.saveBtn, { opacity: (!newApt.patient.trim() || !newApt.time || !newApt.phone || !isValidPhone(newApt.phone)) ? 0.5 : 1 })}>
                 Guardar cita
               </button>
             </div>
@@ -998,7 +1019,7 @@ function FisioApp({ appointments, setApts, schedule, setSched }) {
 
       {/* AJUSTES */}
       {view === "settings" && (
-        <SettingsView schedule={schedule} setSched={setSched} onBack={function() { setView("agenda"); }} initialDate={selDate} />
+        <SettingsView schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} onBack={function() { setView("agenda"); }} initialDate={selDate} />
       )}
 
       {/* PORTAL — info para el fisio */}
@@ -1028,6 +1049,7 @@ function FisioApp({ appointments, setApts, schedule, setSched }) {
             </button>
           </div>
 
+          {/* Cambios pendientes */}
           {appointments.filter(function(a) { return a.pendingChange; }).length > 0 && (
             <div style={Object.assign({}, S.card, { marginTop: 14 })}>
               <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 10 }}>🔄 Cambios pendientes de confirmar</div>
@@ -1044,6 +1066,41 @@ function FisioApp({ appointments, setApts, schedule, setSched }) {
               })}
             </div>
           )}
+
+          {/* TODOS LOS PACIENTES con numero de contacto */}
+          {(function() {
+            var withPhone = appointments.filter(function(a) { return a.status !== "cancelled" && a.phone; });
+            if (withPhone.length === 0) return null;
+            // Ordenar por fecha mas reciente
+            var sorted = withPhone.slice().sort(function(a, b) {
+              if (a.date > b.date) return -1;
+              if (a.date < b.date) return 1;
+              return a.time > b.time ? -1 : 1;
+            });
+            return (
+              <div style={Object.assign({}, S.card, { marginTop: 14 })}>
+                <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 10 }}>📋 Pacientes ({sorted.length})</div>
+                {sorted.map(function(a) {
+                  return (
+                    <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f1f5f9" }}>
+                      <div>
+                        <div style={{ fontWeight: 600, color: "#1e293b", fontSize: 14 }}>{a.patient}</div>
+                        <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                          {APT_TYPES[a.type] ? APT_TYPES[a.type].emoji + " " + APT_TYPES[a.type].label : a.type} · {fmtDate(a.date)} · {a.time}
+                        </div>
+                      </div>
+                      <a href={"https://wa.me/" + a.phone.replace(/\D/g, "")}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ background: "#dcfce7", border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, color: "#15803d", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
+                        <Ic n="wa" s={14} c="#15803d" /> {a.phone}
+                      </a>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1669,7 +1726,7 @@ function ConfirmChangePage({ aptId, propId, appointments, setApts }) {
 // =============================================================================
 // AJUSTES — horario por dia
 // =============================================================================
-function SettingsView({ schedule, setSched, onBack, initialDate }) {
+function SettingsView({ schedule, setSched, durations, setDurations, onBack, initialDate }) {
   const init = parseD(initialDate);
   const [calYear,  setCalYear]  = useState(init.getFullYear());
   const [calMonth, setCalMonth] = useState(init.getMonth());
@@ -1687,9 +1744,23 @@ function SettingsView({ schedule, setSched, onBack, initialDate }) {
   function addSlot(dk) {
     setSched(function(p) {
       var existing = p[dk] || [];
-      var newSlots = normalizeScheduleDay(existing.concat([{ start: "09:00", end: "13:00" }]));
+      // Calcular hora de inicio de la nueva franja: justo despues del fin de la ultima
+      var newStart = "09:00";
+      var newEnd   = "13:00";
+      if (existing.length > 0) {
+        var lastEnd = existing[existing.length - 1].end || "13:00";
+        var lastEndMin = toMin(lastEnd);
+        // Nueva franja empieza 1 hora despues del fin de la ultima
+        var startMin = lastEndMin + 60;
+        var endMin   = startMin + 180; // 3 horas por defecto
+        if (startMin >= 24 * 60) startMin = lastEndMin + 30;
+        if (endMin   >= 24 * 60) endMin   = Math.min(startMin + 60, 23 * 60);
+        newStart = toTime(startMin);
+        newEnd   = toTime(endMin);
+      }
+      // Añadir sin normalizar para que el usuario pueda editarla
       var result = Object.assign({}, p);
-      if (newSlots.length === 0) { delete result[dk]; } else { result[dk] = newSlots; }
+      result[dk] = existing.concat([{ start: newStart, end: newEnd }]);
       return result;
     });
   }
@@ -1723,7 +1794,8 @@ function SettingsView({ schedule, setSched, onBack, initialDate }) {
     setSched(function(p) { const n = Object.assign({}, p); delete n[dk]; return n; });
   }
 
-  const selSlots = schedule[editDk] || [];
+  const selSlots  = schedule[editDk] || [];
+  const durConfig = getDurations(durations);
 
   return (
     <div style={S.content}>
@@ -1768,6 +1840,39 @@ function SettingsView({ schedule, setSched, onBack, initialDate }) {
           })}
         </div>
         <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", textAlign: "center" }}>Toca un día para editar su horario</div>
+      </div>
+
+      {/* CONFIGURACION DE DURACIONES */}
+      <div style={Object.assign({}, S.card, { marginBottom: 14 })}>
+        <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, marginBottom: 14 }}>⏱ Duración de las citas</div>
+        {[
+          { key: "fisio",          label: "Fisio",            emoji: "💆" },
+          { key: "nesa",           label: "Nesa",             emoji: "⚡" },
+          { key: "combinadaFisio", label: "Combinada (Fisio)",emoji: "✨" },
+          { key: "combinadaNesa",  label: "Combinada (Nesa)", emoji: "✨" },
+        ].map(function(item) {
+          return (
+            <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ fontSize: 14, color: "#334155", fontWeight: 500 }}>{item.emoji} {item.label}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="number" min="10" max="120" step="5"
+                  value={durConfig[item.key]}
+                  onChange={function(e) {
+                    var val = parseInt(e.target.value, 10);
+                    if (!val || val < 10) return;
+                    setDurations(function(prev) {
+                      var n = Object.assign({}, prev);
+                      n[item.key] = val;
+                      _slotsCache = {};
+                      return n;
+                    });
+                  }}
+                  style={{ width: 64, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "8px 10px", fontSize: 15, color: "#1e293b", textAlign: "center" }} />
+                <span style={{ fontSize: 13, color: "#94a3b8" }}>min</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div style={Object.assign({}, S.card, { marginBottom: 90 })}>
