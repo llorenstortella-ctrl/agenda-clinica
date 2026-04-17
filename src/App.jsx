@@ -282,24 +282,37 @@ function getSlots(dk, schedule, appointments, type) {
     slots.forEach(function(slot) {
       var slotStart = toMin(slot.start);
       var slotEnd   = toMin(slot.end);
-      // Puntos candidatos: inicio horario + fin de cada bloque
-      var pts = [slotStart];
+
+      // Candidatos: cada 50 min desde el inicio de la franja
+      var cur = slotStart;
+      while (cur + 50 <= slotEnd) {
+        candidates.push(cur);
+        cur += 50;
+      }
+
+      // Tambien desde el fin de cada bloque (para aprovechar huecos intermedios)
       fisioBlocks.concat(nesaBlocks).forEach(function(b) {
-        if (b.end > slotStart && b.end < slotEnd) pts.push(b.end);
+        if (b.end > slotStart && b.end < slotEnd) candidates.push(b.end);
         var alt = b.end - 30;
-        if (alt > slotStart && alt < slotEnd) pts.push(alt);
-      });
-      pts.sort(function(a,b){return a-b;});
-      pts.forEach(function(t) {
-        if (t + 50 > slotEnd) return;
-        var fisioOk = !fisioBlocks.some(function(b){ return t < b.end && t+30 > b.start; });
-        var nesaOk  = !nesaBlocks.some( function(b){ return t+30 < b.end && t+50 > b.start; });
-        if (fisioOk && nesaOk) candidates.push(t);
+        if (alt > slotStart && alt < slotEnd) candidates.push(alt);
+        // Tambien el final del hueco menos 50
+        if (slotEnd - 50 > slotStart) candidates.push(slotEnd - 50);
       });
     });
+
+    // Filtrar: fisio libre t->t+30, nesa libre t+30->t+50, cabe en horario
     var seen2 = {};
-    candidates.forEach(function(m) {
-      if (!seen2[m]) { seen2[m]=true; out.push(toTime(m)); }
+    candidates.forEach(function(t) {
+      if (seen2[t]) return;
+      seen2[t] = true;
+      // Verificar que cabe en alguna franja del horario
+      var fitsInSchedule = slots.some(function(slot) {
+        return t >= toMin(slot.start) && t + 50 <= toMin(slot.end);
+      });
+      if (!fitsInSchedule) return;
+      var fisioOk = !fisioBlocks.some(function(b){ return t < b.end && t+30 > b.start; });
+      var nesaOk  = !nesaBlocks.some( function(b){ return t+30 < b.end && t+50 > b.start; });
+      if (fisioOk && nesaOk) out.push(toTime(t));
     });
     out.sort();
   }
