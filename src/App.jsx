@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "./supabase";
 
 // =============================================================================
 // CONFIGURACION — cambia el numero de telefono del fisio aqui
@@ -242,8 +243,7 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
   }
 
   // Genera candidatos cada [dur] minutos dentro de cada hueco libre
-  // Ademas del inicio del hueco, tambien prueba desde el fin de cada bloque ocupado
-  // Esto garantiza que huecos que empiezan en medio del horario no se pierdan
+  // Tambien prueba desde el inicio de cada franja y fin de cada bloque ocupado
   function validStarts(blocks, dur) {
     var out = [], seen = {};
     slots.forEach(function(slot) {
@@ -253,16 +253,15 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
       gaps.forEach(function(gap) {
         if (gap.end - gap.start < dur) return;
         var candidates = [];
-        // Paso 1: desde el inicio del hueco cada dur minutos
+        // Desde inicio del hueco cada dur minutos
         var t = gap.start;
         while (t + dur <= gap.end) {
           candidates.push(t);
           t += dur;
         }
-        // Paso 2: el final del hueco - dur (para no perder el ultimo slot posible)
+        // Ultimo slot posible en el hueco
         if (gap.end - dur >= gap.start) candidates.push(gap.end - dur);
-        // Paso 3: desde el fin de cada bloque ocupado que cae dentro de este hueco
-        // Esto captura casos como: bloque 09:30-10:00, hueco desde 10:00
+        // Desde fin de cada bloque ocupado (para capturar huecos intermedios)
         blocks.forEach(function(b) {
           if (b.end >= gap.start && b.end <= gap.end) {
             var t2 = b.end;
@@ -272,6 +271,10 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
             }
           }
         });
+        // Siempre incluir slotStart si cabe (primera hora de franja siempre disponible)
+        if (slotStart >= gap.start && slotStart + dur <= gap.end) {
+          candidates.push(slotStart);
+        }
         candidates.forEach(function(c) {
           if (c >= gap.start && c + dur <= gap.end && !seen[c]) {
             seen[c] = true;
@@ -299,8 +302,11 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
     slots.forEach(function(slot) {
       var slotStart = toMin(slot.start);
       var slotEnd   = toMin(slot.end);
+      // Siempre empezar desde slotStart, luego cada durComb
       var cur = slotStart;
       while (cur + durComb <= slotEnd) { candidates.push(cur); cur += durComb; }
+      // Tambien ultimo slot posible
+      if (slotEnd - durComb >= slotStart) candidates.push(slotEnd - durComb);
       fisioBlocks.concat(nesaBlocks).forEach(function(b) {
         if (b.end > slotStart && b.end < slotEnd) candidates.push(b.end);
         var alt = b.end - durCombF;
@@ -549,6 +555,53 @@ function WarnBox({ children }) {
 // =============================================================================
 // APP RAIZ — detecta modo (fisio / portal / accion)
 // =============================================================================
+// =============================================================================
+// HELPERS DE CONVERSION — entre formato app y formato Supabase
+// =============================================================================
+function aptToDb(a) {
+  return {
+    id:                  a.id,
+    patient:             a.patient,
+    type:                a.type,
+    date:                a.date,
+    time:                a.time,
+    phone:               a.phone || "",
+    status:              a.status || "confirmed",
+    source:              a.source || "fisio",
+    cancel_token:        a.cancelToken || null,
+    cancel_token_expiry: a.cancelTokenExpiry || null,
+    prop_token:          a.propToken || null,
+    pending_change:      a.pendingChange || null,
+    dur_fisio:           a.durFisio || null,
+    dur_nesa:            a.durNesa  || null,
+    dur_comb_f:          a.durCombF || null,
+    dur_comb_n:          a.durCombN || null,
+    extra_min:           a.extraMin || 0,
+  };
+}
+
+function aptFromDb(r) {
+  return {
+    id:                r.id,
+    patient:           r.patient,
+    type:              r.type,
+    date:              r.date,
+    time:              r.time,
+    phone:             r.phone || "",
+    status:            r.status || "confirmed",
+    source:            r.source || "fisio",
+    cancelToken:       r.cancel_token || null,
+    cancelTokenExpiry: r.cancel_token_expiry || null,
+    propToken:         r.prop_token || null,
+    pendingChange:     r.pending_change || null,
+    durFisio:          r.dur_fisio || null,
+    durNesa:           r.dur_nesa  || null,
+    durCombF:          r.dur_comb_f || null,
+    durCombN:          r.dur_comb_n || null,
+    extraMin:          r.extra_min || 0,
+  };
+}
+
 export default function App() {
   const params   = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const isPortal = params.get("portal") === "1";
@@ -556,68 +609,219 @@ export default function App() {
   const aptId    = params.get("id");
   const propId   = params.get("prop");
 
-  const [appointments, setApts]  = useState(function() {
-    var raw = LS.get("apts", []);
-    // Paso 1: filtrar registros con campos minimos requeridos
-    var valid = raw.filter(function(a) {
-      return a && typeof a === "object" && a.id && a.date && a.time && a.type && a.patient;
-    });
-    // Paso 2: eliminar duplicados reales al arrancar
-    return deduplicateApts(valid);
-  });
-  const [schedule,     setSched]    = useState(function() { return LS.get("sched", {}); });
-  const [durations,    setDurations] = useState(function() { return LS.get("durations", DEFAULT_DURATIONS); }); // defaults globales
-  const [dayDurations, setDayDurations] = useState(function() { return LS.get("dayDurations", {}); }); // por fecha
+  const [appointments, setApts]       = useState([]);
+  const [schedule,     setSched]      = useState(function() { return LS.get("sched", {}); });
+  const [durations,    setDurations]  = useState(function() { return LS.get("durations", DEFAULT_DURATIONS); });
+  const [dayDurations, setDayDurations] = useState(function() { return LS.get("dayDurations", {}); });
+  const [loading,      setLoading]    = useState(true);
+  const channelRef = useRef(null);
 
+  // ── Cargar citas desde Supabase al arrancar ──────────────────────────────
   useEffect(function() {
-    LS.set("apts", appointments);
-    _slotsCache = {}; // Invalidar cache al cambiar citas
-  }, [appointments]);
-  useEffect(function() {
-    LS.set("sched", schedule);
-    _slotsCache = {}; // Invalidar cache al cambiar horario
-  }, [schedule]);
-  useEffect(function() { LS.set("durations", durations); }, [durations]);
-  useEffect(function() { LS.set("dayDurations", dayDurations); }, [dayDurations]);
+    async function loadAll() {
+      setLoading(true);
+      try {
+        // Citas
+        var res = await supabase.from("appointments").select("*");
+        if (res.error) throw res.error;
+        var apts = (res.data || []).map(aptFromDb).filter(function(a) {
+          return a.id && a.date && a.time && a.type && a.patient;
+        });
+        setApts(deduplicateApts(apts));
 
-  // Sincronizacion entre pestanas: si otra pestana escribe en localStorage,
-  // actualizamos el estado de esta pestana automaticamente.
-  useEffect(function() {
-    function onStorage(e) {
-      if (e.key === "apts" && e.newValue) {
-        try {
-          var parsed = JSON.parse(e.newValue);
-          if (Array.isArray(parsed)) {
-            var valid = parsed.filter(function(a) {
-              return a && typeof a === "object" && a.id && a.date && a.time && a.type && a.patient;
-            });
-            setApts(deduplicateApts(valid));
-            _slotsCache = {};
-          }
-        } catch(err) { /* datos corruptos — ignorar */ }
+        // Horario
+        var resS = await supabase.from("schedule").select("*");
+        if (!resS.error && resS.data && resS.data.length > 0) {
+          var sched = {};
+          resS.data.forEach(function(r) { sched[r.date] = r.slots; });
+          setSched(sched);
+        }
+
+        // Duraciones globales
+        var resD = await supabase.from("durations").select("*").eq("id", "global").single();
+        if (!resD.error && resD.data) {
+          setDurations({
+            fisio:          resD.data.fisio          || 50,
+            nesa:           resD.data.nesa           || 50,
+            combinadaFisio: resD.data.combinada_fisio || 30,
+            combinadaNesa:  resD.data.combinada_nesa  || 20,
+          });
+        }
+
+        // Duraciones por dia
+        var resDD = await supabase.from("day_durations").select("*");
+        if (!resDD.error && resDD.data && resDD.data.length > 0) {
+          var dd = {};
+          resDD.data.forEach(function(r) {
+            dd[r.date] = {
+              fisio:          r.fisio          || 50,
+              nesa:           r.nesa           || 50,
+              combinadaFisio: r.combinada_fisio || 30,
+              combinadaNesa:  r.combinada_nesa  || 20,
+            };
+          });
+          setDayDurations(dd);
+        }
+      } catch(e) {
+        console.error("Error cargando datos:", e);
+        // Fallback a localStorage si Supabase falla
+        var raw = LS.get("apts", []);
+        var valid = raw.filter(function(a) { return a && a.id && a.date && a.time && a.type && a.patient; });
+        setApts(deduplicateApts(valid));
+      } finally {
+        setLoading(false);
+        _slotsCache = {};
       }
     }
-    window.addEventListener("storage", onStorage);
-    return function() { window.removeEventListener("storage", onStorage); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    loadAll();
+  }, []);
+
+  // ── Sync en tiempo real via Supabase Realtime ────────────────────────────
+  useEffect(function() {
+    var ch = supabase.channel("realtime-appointments")
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" },
+        function(payload) {
+          if (payload.eventType === "INSERT") {
+            setApts(function(prev) {
+              var a = aptFromDb(payload.new);
+              if (prev.find(function(x) { return x.id === a.id; })) return prev;
+              return deduplicateApts(prev.concat([a]));
+            });
+          } else if (payload.eventType === "UPDATE") {
+            setApts(function(prev) {
+              return prev.map(function(x) {
+                return x.id === payload.new.id ? aptFromDb(payload.new) : x;
+              });
+            });
+          } else if (payload.eventType === "DELETE") {
+            setApts(function(prev) {
+              return prev.filter(function(x) { return x.id !== payload.old.id; });
+            });
+          }
+          _slotsCache = {};
+        })
+      .subscribe();
+    channelRef.current = ch;
+    return function() { supabase.removeChannel(ch); };
+  }, []);
+
+  // ── Guardar horario en Supabase cuando cambia ────────────────────────────
+  useEffect(function() {
+    LS.set("sched", schedule);
+    _slotsCache = {};
+    // Sincronizar con Supabase de forma asincrona
+    Object.keys(schedule).forEach(async function(date) {
+      try {
+        await supabase.from("schedule").upsert({ date: date, slots: schedule[date] });
+      } catch(e) { console.error("Error guardando horario:", e); }
+    });
+  }, [schedule]);
+
+  // ── Guardar duraciones globales en Supabase ──────────────────────────────
+  useEffect(function() {
+    LS.set("durations", durations);
+    async function saveDurations() {
+      try {
+        await supabase.from("durations").upsert({
+          id:              "global",
+          fisio:           durations.fisio,
+          nesa:            durations.nesa,
+          combinada_fisio: durations.combinadaFisio,
+          combinada_nesa:  durations.combinadaNesa,
+        });
+      } catch(e) { console.error("Error guardando duraciones:", e); }
+    }
+    saveDurations();
+  }, [durations]);
+
+  // ── Guardar duraciones por dia en Supabase ───────────────────────────────
+  useEffect(function() {
+    LS.set("dayDurations", dayDurations);
+    async function saveDayDurations() {
+      try {
+        var rows = Object.keys(dayDurations).map(function(date) {
+          var d = dayDurations[date];
+          return {
+            date:            date,
+            fisio:           d.fisio,
+            nesa:            d.nesa,
+            combinada_fisio: d.combinadaFisio,
+            combinada_nesa:  d.combinadaNesa,
+          };
+        });
+        if (rows.length > 0) {
+          await supabase.from("day_durations").upsert(rows);
+        }
+      } catch(e) { console.error("Error guardando duraciones por dia:", e); }
+    }
+    saveDayDurations();
+  }, [dayDurations]);
+
+  // ── setApts con sync a Supabase ──────────────────────────────────────────
+  // Wrapper que actualiza estado local Y Supabase
+  function setAptsSync(updaterOrArray, supabaseOp) {
+    setApts(function(prev) {
+      var next = typeof updaterOrArray === "function" ? updaterOrArray(prev) : updaterOrArray;
+      // Ejecutar operacion Supabase si se proporciona
+      if (supabaseOp) {
+        supabaseOp(prev, next).catch(function(e) { console.error("Supabase sync error:", e); });
+      }
+      _slotsCache = {};
+      return next;
+    });
+  }
+
+  // ── Funciones de sincronizacion Supabase para citas ─────────────────────
+  async function dbInsertApt(apt) {
+    try {
+      await supabase.from("appointments").insert([aptToDb(apt)]);
+    } catch(e) { console.error("Error insertando cita:", e); }
+  }
+
+  async function dbUpdateApt(apt) {
+    try {
+      await supabase.from("appointments").update(aptToDb(apt)).eq("id", apt.id);
+    } catch(e) { console.error("Error actualizando cita:", e); }
+  }
+
+  async function dbDeleteApt(id) {
+    try {
+      await supabase.from("appointments").delete().eq("id", id);
+    } catch(e) { console.error("Error eliminando cita:", e); }
+  }
+
+  async function dbUpsertApt(apt) {
+    try {
+      await supabase.from("appointments").upsert([aptToDb(apt)]);
+    } catch(e) { console.error("Error upserting cita:", e); }
+  }
+
+  if (loading) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: "#f0f4f8", flexDirection: "column", gap: 16 }}>
+        <div style={{ fontSize: 40 }}>📅</div>
+        <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 18 }}>Cargando agenda...</div>
+      </div>
+    );
+  }
 
   if (action === "cancel" && aptId) {
     var cancelToken = params.get("token") || "";
-    return <CancelPage aptId={aptId} cancelToken={cancelToken} appointments={appointments} setApts={setApts} />;
+    return <CancelPage aptId={aptId} cancelToken={cancelToken} appointments={appointments} setApts={setApts} dbUpdateApt={dbUpdateApt} />;
   }
   if (action === "confirm-change" && aptId && propId) {
-    return <ConfirmChangePage aptId={aptId} propId={propId} appointments={appointments} setApts={setApts} />;
+    return <ConfirmChangePage aptId={aptId} propId={propId} appointments={appointments} setApts={setApts} dbUpdateApt={dbUpdateApt} />;
   }
   if (isPortal) {
-    return <PatientPortal appointments={appointments} setApts={setApts} schedule={schedule} dayDurations={dayDurations} durations={durations} />;
+    return <PatientPortal appointments={appointments} setApts={setApts} schedule={schedule} dayDurations={dayDurations} durations={durations} dbInsertApt={dbInsertApt} />;
   }
-  return <FisioApp appointments={appointments} setApts={setApts} schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} dayDurations={dayDurations} setDayDurations={setDayDurations} />;
+  return <FisioApp appointments={appointments} setApts={setApts} schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} dayDurations={dayDurations} setDayDurations={setDayDurations} dbInsertApt={dbInsertApt} dbUpdateApt={dbUpdateApt} dbDeleteApt={dbDeleteApt} dbUpsertApt={dbUpsertApt} />;
 }
 
 // =============================================================================
 // PANEL DEL FISIO
 // =============================================================================
-function FisioApp({ appointments, setApts, schedule, setSched, durations, setDurations, dayDurations, setDayDurations }) {
+function FisioApp({ appointments, setApts, schedule, setSched, durations, setDurations, dayDurations, setDayDurations, dbInsertApt, dbUpdateApt, dbDeleteApt, dbUpsertApt }) {
   const [view,        setView]       = useState("agenda");
   const [selDate,     setSelDate]    = useState(todayKey());
   const [calMonth,    setCalMonth]   = useState(new Date().getMonth());
@@ -742,13 +946,14 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
 
     setApts(function(prev) {
       // SEGUNDA VALIDACION ATOMICA: re-verificar con el estado mas reciente
-      // Esto captura race conditions entre dos usuarios reservando a la vez
       var freshDayApts = prev.filter(function(a) { return a.date === aptToSave.date; });
       var freshConflict = hasConflict(freshDayApts, aptToSave.time, aptToSave.type, dursAtSave);
       if (freshConflict) {
         conflictFound = true;
-        return prev; // No anadir — slot ya ocupado
+        return prev;
       }
+      // Guardar en Supabase
+      if (dbInsertApt) dbInsertApt(aptToSave);
       return deduplicateApts(prev.concat([aptToSave]));
     });
 
@@ -789,6 +994,12 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
       });
     });
     _slotsCache = {};
+    // Sincronizar con Supabase
+    setApts(function(prev) {
+      var updated = prev.find(function(a) { return a.id === extendForm.id; });
+      if (updated && dbUpsertApt) dbUpsertApt(updated);
+      return prev;
+    });
     setExtendForm(null);
     setModal(null);
     showToast("Cita alargada " + extra + " min");
@@ -830,6 +1041,12 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
                     "¿Te va bien? Confirma aquí:\n" + link;
 
     window.open(waLink(phone, msg), "_blank");
+    // Sincronizar pendingChange con Supabase
+    setApts(function(prev) {
+      var updated = prev.find(function(a) { return a.id === aptId2; });
+      if (updated && dbUpdateApt) dbUpdateApt(updated);
+      return prev;
+    });
     setModal(null);
     setChangeForm({ date: "", time: "" });
     showToast("Propuesta enviada por WhatsApp");
@@ -837,6 +1054,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
 
   function handleDelete(apt) {
     setApts(function(prev) { return prev.filter(function(a) { return a.id !== apt.id; }); });
+    if (dbDeleteApt) dbDeleteApt(apt.id);
     setModal(null);
     showToast("Cita eliminada");
   }
@@ -849,7 +1067,9 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
     setApts(function(prev) {
       return prev.map(function(a) {
         if (a.id !== editForm.id) return a;
-        return Object.assign({}, a, { patient: editForm.patient, phone: fullPhone });
+        var updated = Object.assign({}, a, { patient: editForm.patient, phone: fullPhone });
+        if (dbUpdateApt) dbUpdateApt(updated);
+        return updated;
       });
     });
     setEditForm(null);
@@ -1486,7 +1706,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
 // =============================================================================
 // PORTAL DEL PACIENTE
 // =============================================================================
-function PatientPortal({ appointments, setApts, schedule, dayDurations, durations }) {
+function PatientPortal({ appointments, setApts, schedule, dayDurations, durations, dbInsertApt }) {
   const [step,     setStep]    = useState(1);
   const [type,     setType]    = useState("fisio");
   const [selDate,  setSelDate] = useState(null);
@@ -1560,6 +1780,7 @@ function PatientPortal({ appointments, setApts, schedule, dayDurations, duration
         conflictFound = true;
         return prev;
       }
+      if (dbInsertApt) dbInsertApt(aptToBook);
       return deduplicateApts(prev.concat([aptToBook]));
     });
 
@@ -1619,6 +1840,13 @@ function PatientPortal({ appointments, setApts, schedule, dayDurations, duration
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {Object.entries(APT_TYPES).map(function(entry) {
                 const k = entry[0], v = entry[1];
+                // Mostrar duracion real: si hay dia seleccionado usar sus durs, sino los defaults
+                var dRef = getDurations((dayDurations || {})[selDate] || durations || {});
+                var descReal = k === "fisio"
+                  ? "Sesión de fisioterapia · " + dRef.fisio + " min"
+                  : k === "nesa"
+                  ? "Sesión con máquina Nesa · " + dRef.nesa + " min"
+                  : dRef.combinadaFisio + " min Fisio + " + dRef.combinadaNesa + " min Nesa";
                 return (
                   <button key={k} className="tap"
                     onClick={function() { setType(k); setSelDate(null); setTime(""); setStep(2); }}
@@ -1626,7 +1854,7 @@ function PatientPortal({ appointments, setApts, schedule, dayDurations, duration
                     <span style={{ fontSize: 28 }}>{v.emoji}</span>
                     <div>
                       <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15 }}>{v.label}</div>
-                      <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>{v.desc}</div>
+                      <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>{descReal}</div>
                     </div>
                   </button>
                 );
@@ -1801,7 +2029,7 @@ function PatientPortal({ appointments, setApts, schedule, dayDurations, duration
 // =============================================================================
 // PAGINA DE CANCELACION
 // =============================================================================
-function CancelPage({ aptId, cancelToken, appointments, setApts }) {
+function CancelPage({ aptId, cancelToken, appointments, setApts, dbUpdateApt }) {
   const apt  = appointments.find(function(a) { return a.id === aptId; });
   const [done, setDone] = useState(false);
 
@@ -1875,12 +2103,13 @@ function CancelPage({ aptId, cancelToken, appointments, setApts }) {
           <button className="tap"
             onClick={function() {
               setApts(function(prev) {
-                // Idempotente: si ya esta cancelada o no existe, no tocar el estado
                 var apt2 = prev.find(function(a) { return a.id === aptId; });
-                if (!apt2 || apt2.status === "cancelled") return prev; // ya cancelada — no modificar
+                if (!apt2 || apt2.status === "cancelled") return prev;
+                var updated = Object.assign({}, apt2, { status: "cancelled" });
+                if (dbUpdateApt) dbUpdateApt(updated);
                 return prev.map(function(a) {
                   if (a.id !== aptId) return a;
-                  return Object.assign({}, a, { status: "cancelled" });
+                  return updated;
                 });
               });
               setDone(true);
@@ -1900,7 +2129,7 @@ function CancelPage({ aptId, cancelToken, appointments, setApts }) {
 // =============================================================================
 // PAGINA DE CONFIRMACION DE CAMBIO
 // =============================================================================
-function ConfirmChangePage({ aptId, propId, appointments, setApts }) {
+function ConfirmChangePage({ aptId, propId, appointments, setApts, dbUpdateApt }) {
   const apt    = appointments.find(function(a) { return a.id === aptId; });
   const [result, setResult] = useState(null);
 
@@ -1984,7 +2213,9 @@ function ConfirmChangePage({ aptId, propId, appointments, setApts }) {
               setApts(function(prev) {
                 return prev.map(function(a) {
                   if (a.id !== aptId) return a;
-                  return Object.assign({}, a, { status: "cancelled", pendingChange: null });
+                  var updated = Object.assign({}, a, { status: "cancelled", pendingChange: null });
+                  if (dbUpdateApt) dbUpdateApt(updated);
+                  return updated;
                 });
               });
               setResult("rejected");
