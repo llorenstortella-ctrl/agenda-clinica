@@ -563,7 +563,8 @@ export default function App() {
     return deduplicateApts(valid);
   });
   const [schedule,     setSched]    = useState(function() { return LS.get("sched", {}); });
-  const [durations,    setDurations] = useState(function() { return LS.get("durations", DEFAULT_DURATIONS); });
+  const [durations,    setDurations] = useState(function() { return LS.get("durations", DEFAULT_DURATIONS); }); // defaults globales
+  const [dayDurations, setDayDurations] = useState(function() { return LS.get("dayDurations", {}); }); // por fecha
 
   useEffect(function() {
     LS.set("apts", appointments);
@@ -574,6 +575,7 @@ export default function App() {
     _slotsCache = {}; // Invalidar cache al cambiar horario
   }, [schedule]);
   useEffect(function() { LS.set("durations", durations); }, [durations]);
+  useEffect(function() { LS.set("dayDurations", dayDurations); }, [dayDurations]);
 
   // Sincronizacion entre pestanas: si otra pestana escribe en localStorage,
   // actualizamos el estado de esta pestana automaticamente.
@@ -606,13 +608,13 @@ export default function App() {
   if (isPortal) {
     return <PatientPortal appointments={appointments} setApts={setApts} schedule={schedule} />;
   }
-  return <FisioApp appointments={appointments} setApts={setApts} schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} />;
+  return <FisioApp appointments={appointments} setApts={setApts} schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} dayDurations={dayDurations} setDayDurations={setDayDurations} />;
 }
 
 // =============================================================================
 // PANEL DEL FISIO
 // =============================================================================
-function FisioApp({ appointments, setApts, schedule, setSched, durations, setDurations }) {
+function FisioApp({ appointments, setApts, schedule, setSched, durations, setDurations, dayDurations, setDayDurations }) {
   const [view,        setView]       = useState("agenda");
   const [selDate,     setSelDate]    = useState(todayKey());
   const [calMonth,    setCalMonth]   = useState(new Date().getMonth());
@@ -686,13 +688,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
     if (!newApt.patient.trim() || !newApt.time) return;
     if (!newAptNumber || !isValidPhone(newAptNumber)) { setConflict("El WhatsApp del paciente es obligatorio."); return; }
     const dk = newApt.date;
-    if (!(schedule[dk] || []).length) { setConflict("Este día no tiene horario configurado."); return; }
-
-    const inSched = (schedule[dk] || []).some(function(s) {
-      return toMin(newApt.time) >= toMin(s.start) && toMin(newApt.time) + 50 <= toMin(s.end);
-    });
-    if (!inSched) { setConflict("Esa hora está fuera del horario del día."); return; }
-
+    // El fisio puede crear citas sin restriccion de horario — solo verifica conflictos reales
     const err = hasConflict(appointments.filter(function(a) { return a.date === dk; }), newApt.time, newApt.type);
     if (err) {
       setConflict(err);
@@ -1039,19 +1035,17 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
 
             <Field label="Hora">
               {(function() {
-                const avail = getSlots(newApt.date, schedule, appointments, newApt.type);
-                if (!(schedule[newApt.date] || []).length) {
-                  return (
-                    <WarnBox>
-                      <Ic n="warn" s={15} c="#92400e" />
-                      <span>Sin horario este día.{" "}
-                        <span onClick={function() { setView("settings"); }} style={{ textDecoration: "underline", cursor: "pointer" }}>Configurar →</span>
-                      </span>
-                    </WarnBox>
-                  );
-                }
+                // El fisio puede reservar cualquier hora libre — sin restriccion de horario
+                var allDayApts = appointments.filter(function(a) { return a.date === newApt.date; });
+                // Generar todas las horas del dia de 6:00 a 22:00 cada 10 min
+                var allTimes = [];
+                for (var m = 360; m <= 1320; m += 10) { allTimes.push(toTime(m)); }
+                // Filtrar solo las que no tienen conflicto
+                var avail = allTimes.filter(function(t) {
+                  return !hasConflict(allDayApts, t, newApt.type);
+                });
                 if (!avail.length) {
-                  return <WarnBox><Ic n="warn" s={15} c="#92400e" /> Sin disponibilidad para este tipo de cita.</WarnBox>;
+                  return <WarnBox><Ic n="warn" s={15} c="#92400e" /> No hay horas disponibles este día.</WarnBox>;
                 }
                 return (
                   <InputRow>
@@ -1103,7 +1097,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
 
       {/* AJUSTES */}
       {view === "settings" && (
-        <SettingsView schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} onBack={function() { setView("agenda"); }} initialDate={selDate} />
+        <SettingsView schedule={schedule} setSched={setSched} durations={durations} setDurations={setDurations} dayDurations={dayDurations} setDayDurations={setDayDurations} onBack={function() { setView("agenda"); }} initialDate={selDate} />
       )}
 
       {/* PORTAL — info para el fisio */}
@@ -1880,7 +1874,8 @@ function DurationEditor({ durations, setDurations }) {
   ];
   return (
     <div style={Object.assign({}, S.card, { marginBottom: 14 })}>
-      <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, marginBottom: 14 }}>⏱ Duración de las citas</div>
+      <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, marginBottom: 4 }}>⏱ Duración de las citas</div>
+      <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>Solo para este día. Deja vacío para usar duración por defecto.</div>
       {items.map(function(item) {
         return (
           <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -1913,7 +1908,7 @@ function DurationEditor({ durations, setDurations }) {
 // =============================================================================
 // AJUSTES — horario por dia
 // =============================================================================
-function SettingsView({ schedule, setSched, durations, setDurations, onBack, initialDate }) {
+function SettingsView({ schedule, setSched, durations, setDurations, dayDurations, setDayDurations, onBack, initialDate }) {
   const init = parseD(initialDate);
   const [calYear,  setCalYear]  = useState(init.getFullYear());
   const [calMonth, setCalMonth] = useState(init.getMonth());
@@ -2030,7 +2025,19 @@ function SettingsView({ schedule, setSched, durations, setDurations, onBack, ini
       </div>
 
       {/* CONFIGURACION DE DURACIONES */}
-      <DurationEditor durations={durations} setDurations={setDurations} />
+      <DurationEditor
+        dk={editDk}
+        durations={dayDurations[editDk] || durations}
+        setDurations={function(updater) {
+          setDayDurations(function(prev) {
+            var current = prev[editDk] || Object.assign({}, durations);
+            var updated = typeof updater === "function" ? updater(current) : updater;
+            var n = Object.assign({}, prev);
+            n[editDk] = updated;
+            return n;
+          });
+        }}
+      />
 
       <div style={Object.assign({}, S.card, { marginBottom: 90 })}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
