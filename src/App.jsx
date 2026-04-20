@@ -2026,6 +2026,7 @@ function SettingsView({ schedule, setSched, durations, setDurations, dayDuration
 
       {/* CONFIGURACION DE DURACIONES */}
       <DurationEditor
+        key={editDk}
         dk={editDk}
         durations={dayDurations[editDk] || durations}
         setDurations={function(updater) {
