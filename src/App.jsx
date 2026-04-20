@@ -389,9 +389,68 @@ function normalizeScheduleDay(slots) {
 // =============================================================================
 // WHATSAPP
 // =============================================================================
+// Prefijos de paises mas comunes
+var COUNTRY_PREFIXES = [
+  { code: "ES", prefix: "34",  flag: "🇪🇸", name: "España" },
+  { code: "AD", prefix: "376", flag: "🇦🇩", name: "Andorra" },
+  { code: "FR", prefix: "33",  flag: "🇫🇷", name: "Francia" },
+  { code: "PT", prefix: "351", flag: "🇵🇹", name: "Portugal" },
+  { code: "DE", prefix: "49",  flag: "🇩🇪", name: "Alemania" },
+  { code: "IT", prefix: "39",  flag: "🇮🇹", name: "Italia" },
+  { code: "GB", prefix: "44",  flag: "🇬🇧", name: "Reino Unido" },
+  { code: "BE", prefix: "32",  flag: "🇧🇪", name: "Bélgica" },
+  { code: "NL", prefix: "31",  flag: "🇳🇱", name: "Países Bajos" },
+  { code: "CH", prefix: "41",  flag: "🇨🇭", name: "Suiza" },
+  { code: "AR", prefix: "54",  flag: "🇦🇷", name: "Argentina" },
+  { code: "MX", prefix: "52",  flag: "🇲🇽", name: "México" },
+  { code: "CO", prefix: "57",  flag: "🇨🇴", name: "Colombia" },
+  { code: "VE", prefix: "58",  flag: "🇻🇪", name: "Venezuela" },
+  { code: "US", prefix: "1",   flag: "🇺🇸", name: "EEUU/Canadá" },
+  { code: "MA", prefix: "212", flag: "🇲🇦", name: "Marruecos" },
+  { code: "DZ", prefix: "213", flag: "🇩🇿", name: "Argelia" },
+  { code: "RO", prefix: "40",  flag: "🇷🇴", name: "Rumanía" },
+  { code: "UA", prefix: "380", flag: "🇺🇦", name: "Ucrania" },
+  { code: "RU", prefix: "7",   flag: "🇷🇺", name: "Rusia" },
+  { code: "CN", prefix: "86",  flag: "🇨🇳", name: "China" },
+];
+
 function isValidPhone(phone) {
   var digits = phone.replace(/\D/g, "");
-  return digits.length >= 9 && digits.length <= 15;
+  return digits.length >= 6 && digits.length <= 15;
+}
+
+// Componente selector de telefono con prefijo de pais
+function PhoneInput({ prefix, setPrefix, number, setNumber, label }) {
+  return (
+    <div>
+      {label && <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{label}</label>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <select
+          value={prefix}
+          onChange={function(e) { setPrefix(e.target.value); }}
+          style={{ background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "11px 8px", fontSize: 14, color: "#1e293b", flexShrink: 0, maxWidth: 120 }}>
+          {COUNTRY_PREFIXES.map(function(c) {
+            return <option key={c.code} value={c.prefix}>{c.flag} +{c.prefix}</option>;
+          })}
+        </select>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "11px 14px" }}>
+          <input
+            type="tel"
+            placeholder="600000000"
+            value={number}
+            onChange={function(e) { setNumber(e.target.value.replace(/[^0-9]/g, "")); }}
+            style={{ border: "none", background: "transparent", flex: 1, fontSize: 16, color: "#1e293b", width: "100%" }} />
+        </div>
+      </div>
+      {number && !isValidPhone(number) && (
+        <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4 }}>Introduce un número válido</div>
+      )}
+    </div>
+  );
+}
+
+function buildPhone(prefix, number) {
+  return prefix + number.replace(/[^0-9]/g, "");
 }
 
 function waLink(phone, msg) {
@@ -559,11 +618,14 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
   const [calMonth,    setCalMonth]   = useState(new Date().getMonth());
   const [calYear,     setCalYear]    = useState(new Date().getFullYear());
   const [newApt,      setNewApt]     = useState({ patient: "", type: "fisio", date: todayKey(), time: "", phone: "" });
+  const [newAptPrefix, setNewAptPrefix] = useState("34");
+  const [newAptNumber, setNewAptNumber] = useState("");
   const [conflict,    setConflict]   = useState(null);
   const [suggestion,  setSugg]       = useState(null);
   const [toast,       setToast]      = useState(null);
   const [modal,       setModal]      = useState(null);
   const [changeForm,  setChangeForm] = useState({ date: "", time: "" });
+  const [editForm,    setEditForm]   = useState(null); // {patient, phone, phonePrefix, phoneNumber}
   const [saving,      setSaving]      = useState(false);
 
   function showToast(msg, ok) {
@@ -622,7 +684,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
   function handleSave() {
     if (saving) return;
     if (!newApt.patient.trim() || !newApt.time) return;
-    if (!newApt.phone || !isValidPhone(newApt.phone)) { setConflict("El WhatsApp del paciente es obligatorio."); return; }
+    if (!newAptNumber || !isValidPhone(newAptNumber)) { setConflict("El WhatsApp del paciente es obligatorio."); return; }
     const dk = newApt.date;
     if (!(schedule[dk] || []).length) { setConflict("Este día no tiene horario configurado."); return; }
 
@@ -646,7 +708,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
       type: newApt.type,
       date: newApt.date,
       time: newApt.time,
-      phone: newApt.phone || "",
+      phone: buildPhone(newAptPrefix, newAptNumber),
       status: "confirmed",
       source: "fisio",
       cancelToken: uid(),
@@ -727,6 +789,22 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
     setApts(function(prev) { return prev.filter(function(a) { return a.id !== apt.id; }); });
     setModal(null);
     showToast("Cita eliminada");
+  }
+
+  function handleEditSave() {
+    if (!editForm) return;
+    if (!editForm.patient.trim()) return;
+    if (!editForm.phoneNumber || !isValidPhone(editForm.phoneNumber)) return;
+    var fullPhone = buildPhone(editForm.phonePrefix, editForm.phoneNumber);
+    setApts(function(prev) {
+      return prev.map(function(a) {
+        if (a.id !== editForm.id) return a;
+        return Object.assign({}, a, { patient: editForm.patient, phone: fullPhone });
+      });
+    });
+    setEditForm(null);
+    setModal(null);
+    showToast("Cita actualizada");
   }
 
   const portalUrl = (typeof window !== "undefined"
@@ -925,17 +1003,10 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
               </InputRow>
             </Field>
 
-            <Field label="WhatsApp paciente">
-              <InputRow>
-                <Ic n="wa" s={18} c="#94a3b8" />
-                <input style={S.inp} placeholder="34600000000" type="tel"
-                  value={newApt.phone}
-                  onChange={function(e) { setNewApt(function(p) { return Object.assign({}, p, { phone: e.target.value }); }); }} />
-              </InputRow>
-              {newApt.phone && !isValidPhone(newApt.phone) && (
-                <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4 }}>Introduce un número válido (ej: 34612345678)</div>
-              )}
-            </Field>
+            <PhoneInput
+              label="WhatsApp paciente"
+              prefix={newAptPrefix} setPrefix={setNewAptPrefix}
+              number={newAptNumber} setNumber={setNewAptNumber} />
 
             <Field label="Tipo de cita">
               <div style={{ display: "flex", gap: 8 }}>
@@ -1022,7 +1093,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
                 Cancelar
               </button>
               <button className="tap" onClick={handleSave}
-                style={Object.assign({}, S.saveBtn, { opacity: (!newApt.patient.trim() || !newApt.time || !newApt.phone || !isValidPhone(newApt.phone)) ? 0.5 : 1 })}>
+                style={Object.assign({}, S.saveBtn, { opacity: (!newApt.patient.trim() || !newApt.time || !newAptNumber || !isValidPhone(newAptNumber)) ? 0.5 : 1 })}>
                 Guardar cita
               </button>
             </div>
@@ -1138,6 +1209,23 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
               </button>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button className="tap" onClick={function() {
+                var apt = modal.apt;
+                var existingPrefix = "34";
+                var existingNumber = apt.phone || "";
+                // Intentar detectar el prefijo del telefono guardado
+                COUNTRY_PREFIXES.forEach(function(c) {
+                  if (existingNumber.startsWith(c.prefix)) {
+                    existingPrefix = c.prefix;
+                    existingNumber = existingNumber.slice(c.prefix.length);
+                  }
+                });
+                setEditForm({ id: apt.id, patient: apt.patient, phonePrefix: existingPrefix, phoneNumber: existingNumber });
+                setModal({ type: "edit", apt: apt });
+              }}
+                style={Object.assign({}, S.saveBtn, { background: "#0891b2" })}>
+                <Ic n="edit" s={18} c="#fff" /> Editar datos
+              </button>
               <button className="tap" onClick={function() { setModal({ type: "change", apt: modal.apt }); }}
                 style={Object.assign({}, S.saveBtn, { background: "#7c3aed" })}>
                 <Ic n="edit" s={18} c="#fff" /> Proponer cambio de hora
@@ -1147,6 +1235,41 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
                 <Ic n="trash" s={18} c="#fff" /> Eliminar cita
               </button>
               <button className="tap" onClick={function() { setModal(null); }} style={S.cancelBtn}>Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: editar datos cita */}
+      {modal && modal.type === "edit" && editForm && (
+        <div style={S.overlay} onClick={function() { setModal(null); setEditForm(null); }}>
+          <div style={S.modal} onClick={function(e) { e.stopPropagation(); }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={S.modalTitle}>Editar cita</div>
+              <button onClick={function() { setModal(null); setEditForm(null); }} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <Ic n="x" s={20} c="#94a3b8" />
+              </button>
+            </div>
+            <Field label="Nombre del paciente">
+              <InputRow>
+                <Ic n="user" s={18} c="#94a3b8" />
+                <input style={S.inp} placeholder="Nombre del paciente"
+                  value={editForm.patient}
+                  onChange={function(e) { setEditForm(function(p) { return Object.assign({}, p, { patient: e.target.value }); }); }} />
+              </InputRow>
+            </Field>
+            <PhoneInput
+              label="WhatsApp paciente"
+              prefix={editForm.phonePrefix}
+              setPrefix={function(v) { setEditForm(function(p) { return Object.assign({}, p, { phonePrefix: v }); }); }}
+              number={editForm.phoneNumber}
+              setNumber={function(v) { setEditForm(function(p) { return Object.assign({}, p, { phoneNumber: v }); }); }} />
+            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+              <button className="tap" onClick={function() { setModal(null); setEditForm(null); }} style={S.cancelBtn}>Cancelar</button>
+              <button className="tap" onClick={handleEditSave}
+                style={Object.assign({}, S.saveBtn, { opacity: (!editForm.patient.trim() || !editForm.phoneNumber || !isValidPhone(editForm.phoneNumber)) ? 0.5 : 1 })}>
+                Guardar cambios
+              </button>
             </div>
           </div>
         </div>
@@ -1236,11 +1359,19 @@ function PatientPortal({ appointments, setApts, schedule }) {
   const [selDate,  setSelDate] = useState(null);
   const [time,     setTime]    = useState("");
   const [form,     setForm]    = useState({ name: "", phone: "" });
+  const [phonePrefix, setPhonePrefix] = useState("34");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [calMonth, setCalMonth]= useState(new Date().getMonth());
   const [calYear,  setCalYear] = useState(new Date().getFullYear());
   const [savedApt, setSavedApt]= useState(null);
 
-  const avail = selDate ? getSlots(selDate, schedule, appointments, type) : [];
+  var nowKey  = todayKey();
+  var nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+  var avail = selDate ? getSlots(selDate, schedule, appointments, type).filter(function(t) {
+    // Si es hoy, filtrar horas que ya han pasado (con 10 min de margen)
+    if (selDate === nowKey) return toMin(t) > nowMins + 10;
+    return true;
+  }) : [];
 
   // Calcular días con disponibilidad este mes
   const daysWithSlots = {};
@@ -1262,8 +1393,8 @@ function PatientPortal({ appointments, setApts, schedule }) {
 
   function handleBook() {
     if (booking) return;
-    if (!form.name.trim() || !form.phone.trim()) return;
-    if (!isValidPhone(form.phone)) return;
+    if (!form.name.trim() || !phoneNumber.trim()) return;
+    if (!isValidPhone(phoneNumber)) return;
     if (!selDate || !time || !type) return;
 
     var aptToBook = {
@@ -1272,7 +1403,7 @@ function PatientPortal({ appointments, setApts, schedule }) {
       time: time,
       type: type,
       patient: form.name.trim(),
-      phone: form.phone.trim(),
+      phone: buildPhone(phonePrefix, phoneNumber),
       status: "confirmed",
       source: "patient",
       cancelToken: uid(),
@@ -1467,24 +1598,17 @@ function PatientPortal({ appointments, setApts, schedule }) {
               </InputRow>
             </Field>
 
-            <Field label="Tu WhatsApp">
-              <InputRow>
-                <Ic n="wa" s={18} c="#94a3b8" />
-                <input style={S.inp} placeholder="34600000000" type="tel"
-                  value={form.phone}
-                  onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { phone: e.target.value }); }); }} />
-              </InputRow>
-              {form.phone.trim() && !isValidPhone(form.phone) && (
-                <div style={{ fontSize: 11, color: "#dc2626", marginTop: 4 }}>Introduce un número válido (ej: 34612345678)</div>
-              )}
-            </Field>
+            <PhoneInput
+              label="Tu WhatsApp"
+              prefix={phonePrefix} setPrefix={setPhonePrefix}
+              number={phoneNumber} setNumber={setPhoneNumber} />
 
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 14, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 14, marginTop: 8, lineHeight: 1.5 }}>
               Tu número solo se usará para avisos sobre tu cita.
             </div>
 
             <button className="tap" onClick={handleBook}
-              style={Object.assign({}, S.saveBtn, { opacity: (!form.name.trim() || !form.phone.trim() || !isValidPhone(form.phone)) ? 0.5 : 1, gap: 8 })}>
+              style={Object.assign({}, S.saveBtn, { opacity: (!form.name.trim() || !phoneNumber.trim() || !isValidPhone(phoneNumber)) ? 0.5 : 1, gap: 8 })}>
               <Ic n="check" s={18} c="#fff" /> Confirmar reserva
             </button>
           </div>
@@ -1872,13 +1996,26 @@ function SettingsView({ schedule, setSched, durations, setDurations, onBack, ini
                   value={durConfig[item.key]}
                   onChange={function(e) {
                     var val = parseInt(e.target.value, 10);
-                    if (!val || val < 10) return;
+                    if (isNaN(val)) return; // no borrar
+                    if (val < 10) val = 10;
+                    if (val > 120) val = 120;
                     setDurations(function(prev) {
                       var n = Object.assign({}, prev);
                       n[item.key] = val;
                       _slotsCache = {};
                       return n;
                     });
+                  }}
+                  onBlur={function(e) {
+                    // Si queda vacio al salir, restaurar valor por defecto
+                    var val = parseInt(e.target.value, 10);
+                    if (!val || val < 10) {
+                      setDurations(function(prev) {
+                        var n = Object.assign({}, prev);
+                        n[item.key] = DEFAULT_DURATIONS[item.key] || 50;
+                        return n;
+                      });
+                    }
                   }}
                   style={{ width: 64, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "8px 10px", fontSize: 15, color: "#1e293b", textAlign: "center" }} />
                 <span style={{ fontSize: 13, color: "#94a3b8" }}>min</span>
