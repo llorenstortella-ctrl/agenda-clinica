@@ -1889,8 +1889,9 @@ function DurationEditor({ durations, setDurations }) {
               <input type="text" inputMode="numeric" pattern="[0-9]*"
                 value={localVals[item.key]}
                 onChange={function(e) {
+                  // Permitir cualquier valor incluyendo vacio mientras se escribe
                   var raw = e.target.value.replace(/[^0-9]/g, "");
-                  setLocalVals(function(p) { var n=Object.assign({},p); n[item.key]=raw; return n; });
+                  setLocalVals(function(p) { var n=Object.assign({},p); n[item.key]=raw===""?"":raw; return n; });
                 }}
                 onBlur={function() {
                   var val = parseInt(localVals[item.key], 10);
