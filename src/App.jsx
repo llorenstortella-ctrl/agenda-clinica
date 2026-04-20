@@ -207,11 +207,16 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
   dayApts.forEach(function(a) {
     if (a.status === "cancelled") return;
     var t = toMin(a.time);
-    if (a.type === "fisio")     { fisioBlocks.push({ start: t, end: t + durFisio }); }
-    if (a.type === "nesa")      { nesaBlocks.push({  start: t, end: t + durNesa }); }
+    // Usar duracion guardada en la cita si existe, sino usar la del dia
+    var aFisio = a.durFisio  || durFisio;
+    var aNesa  = a.durNesa   || durNesa;
+    var aCombF = a.durCombF  || durCombF;
+    var aCombN = a.durCombN  || durCombN;
+    if (a.type === "fisio")     { fisioBlocks.push({ start: t, end: t + aFisio }); }
+    if (a.type === "nesa")      { nesaBlocks.push({  start: t, end: t + aNesa }); }
     if (a.type === "combinada") {
-      fisioBlocks.push({ start: t,          end: t + durCombF });
-      nesaBlocks.push({  start: t + durCombF, end: t + durComb });
+      fisioBlocks.push({ start: t,           end: t + aCombF });
+      nesaBlocks.push({  start: t + aCombF,  end: t + aCombF + aCombN });
     }
   });
 
@@ -676,6 +681,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
 
     setSaving(true);
     // Capturar valores antes de la llamada asincrona
+    var dursAtSave = getDurations((dayDurations || {})[newApt.date] || durations);
     var aptToSave = {
       id: uid(),
       patient: newApt.patient,
@@ -688,6 +694,10 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
       cancelToken: uid(),
       cancelTokenExpiry: Date.now() + 7 * 24 * 60 * 60 * 1000, // expira en 7 dias
       propToken: uid(),
+      durFisio:  dursAtSave.fisio,
+      durNesa:   dursAtSave.nesa,
+      durCombF:  dursAtSave.combinadaFisio,
+      durCombN:  dursAtSave.combinadaNesa,
     };
     var savedDate = newApt.date;
     var conflictFound = false;
@@ -996,7 +1006,13 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
                 })}
               </div>
               <div style={Object.assign({}, S.typeInfo, { borderLeftColor: APT_TYPES[newApt.type].color })}>
-                {APT_TYPES[newApt.type].desc}
+                {(function() {
+                  var d = getDurations((dayDurations || {})[newApt.date] || durations);
+                  if (newApt.type === "fisio")     return "Sesión de fisioterapia · " + d.fisio + " min";
+                  if (newApt.type === "nesa")      return "Sesión con máquina Nesa · " + d.nesa + " min";
+                  if (newApt.type === "combinada") return d.combinadaFisio + " min Fisio + " + d.combinadaNesa + " min Nesa";
+                  return APT_TYPES[newApt.type].desc;
+                })()}
               </div>
             </Field>
 
@@ -1013,21 +1029,27 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
 
             <Field label="Hora">
               {(function() {
-                // El fisio puede reservar cualquier hora libre — sin restriccion de horario
                 var allDayApts = appointments.filter(function(a) { return a.date === newApt.date; });
-                // Usar la duracion configurada para el paso entre horas
-                var durStep = getDurations((dayDurations || {})[newApt.date] || durations).fisio;
-                if (newApt.type === "nesa") durStep = getDurations((dayDurations || {})[newApt.date] || durations).nesa;
-                if (newApt.type === "combinada") {
-                  var d2 = getDurations((dayDurations || {})[newApt.date] || durations);
-                  durStep = d2.combinadaFisio + d2.combinadaNesa;
+                var dursForDay = getDurations((dayDurations || {})[newApt.date] || durations);
+                var hasSched = (schedule[newApt.date] || []).length > 0;
+                var avail;
+                if (hasSched) {
+                  // Si hay horario configurado, respetar ese horario
+                  avail = getSlots(newApt.date, schedule, appointments, newApt.type, dayDurations, durations);
+                } else {
+                  // Sin horario: el fisio puede elegir cualquier hora libre
+                  var durStep = dursForDay.fisio;
+                  if (newApt.type === "nesa") durStep = dursForDay.nesa;
+                  if (newApt.type === "combinada") durStep = dursForDay.combinadaFisio + dursForDay.combinadaNesa;
+                  var allTimes = [];
+                  for (var m = 360; m + durStep <= 1380; m += durStep) { allTimes.push(toTime(m)); }
+                  avail = allTimes.filter(function(t) {
+                    return !hasConflict(allDayApts, t, newApt.type);
+                  });
                 }
-                var allTimes = [];
-                for (var m = 360; m + durStep <= 1320 + durStep; m += durStep) { allTimes.push(toTime(m)); }
-                // Filtrar solo las que no tienen conflicto
-                var avail = allTimes.filter(function(t) {
-                  return !hasConflict(allDayApts, t, newApt.type);
-                });
+                if (!hasSched) {
+                  // Aviso: sin horario, pero el fisio puede seguir eligiendo
+                }
                 if (!avail.length) {
                   return <WarnBox><Ic n="warn" s={15} c="#92400e" /> No hay horas disponibles este día.</WarnBox>;
                 }
@@ -1375,6 +1397,7 @@ function PatientPortal({ appointments, setApts, schedule, dayDurations, duration
     if (!isValidPhone(phoneNumber)) return;
     if (!selDate || !time || !type) return;
 
+    var dursAtBook = getDurations((dayDurations || {})[selDate] || durations || {});
     var aptToBook = {
       id: uid(),
       date: selDate,
@@ -1387,6 +1410,10 @@ function PatientPortal({ appointments, setApts, schedule, dayDurations, duration
       cancelToken: uid(),
       cancelTokenExpiry: Date.now() + 7 * 24 * 60 * 60 * 1000, // expira en 7 dias
       propToken: uid(),
+      durFisio:  dursAtBook.fisio,
+      durNesa:   dursAtBook.nesa,
+      durCombF:  dursAtBook.combinadaFisio,
+      durCombN:  dursAtBook.combinadaNesa,
     };
 
     setBooking(true);
