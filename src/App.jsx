@@ -631,6 +631,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
   const [modal,       setModal]      = useState(null);
   const [changeForm,  setChangeForm] = useState({ date: "", time: "" });
   const [editForm,    setEditForm]   = useState(null); // {patient, phone, phonePrefix, phoneNumber}
+  const [extendForm,  setExtendForm] = useState(null); // {id, extraMin}
   const [saving,      setSaving]      = useState(false);
 
   function showToast(msg, ok) {
@@ -764,6 +765,33 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
     showToast("Cita guardada");
     setSelDate(savedDate);
     setView("agenda");
+  }
+
+  function handleExtend() {
+    if (!extendForm) return;
+    var extra = parseInt(extendForm.extraMin, 10);
+    if (!extra || extra < 5) return;
+    setApts(function(prev) {
+      return prev.map(function(a) {
+        if (a.id !== extendForm.id) return a;
+        // Sumar minutos extra a la duracion de la cita
+        var newFisio  = (a.durFisio  || 50) + (a.type === "fisio" ? extra : 0);
+        var newNesa   = (a.durNesa   || 50) + (a.type === "nesa"  ? extra : 0);
+        var newCombF  = (a.durCombF  || 30) + (a.type === "combinada" ? Math.round(extra / 2) : 0);
+        var newCombN  = (a.durCombN  || 20) + (a.type === "combinada" ? extra - Math.round(extra / 2) : 0);
+        return Object.assign({}, a, {
+          durFisio: newFisio,
+          durNesa:  newNesa,
+          durCombF: newCombF,
+          durCombN: newCombN,
+          extraMin: (a.extraMin || 0) + extra,
+        });
+      });
+    });
+    _slotsCache = {};
+    setExtendForm(null);
+    setModal(null);
+    showToast("Cita alargada " + extra + " min");
   }
 
   function handleProposeChange() {
@@ -1085,9 +1113,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
                     return !hasConflict(allDayApts, t, newApt.type, dursForDay);
                   });
                 }
-                if (!hasSched) {
-                  // Aviso: sin horario, pero el fisio puede seguir eligiendo
-                }
+                // Sin horario: aviso informativo pero no bloquea
                 if (!avail.length) {
                   return <WarnBox><Ic n="warn" s={15} c="#92400e" /> No hay horas disponibles este día.</WarnBox>;
                 }
@@ -1189,37 +1215,62 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
             </div>
           )}
 
-          {/* TODOS LOS PACIENTES con numero de contacto */}
+          {/* TODOS LOS PACIENTES — proximos primero, pasados archivados */}
           {(function() {
-            var withPhone = appointments.filter(function(a) { return a.status !== "cancelled" && a.phone; });
-            if (withPhone.length === 0) return null;
-            // Ordenar por fecha mas reciente
-            var sorted = withPhone.slice().sort(function(a, b) {
+            var today = todayKey();
+            var nowMinsP = new Date().getHours() * 60 + new Date().getMinutes();
+            var active = appointments.filter(function(a) {
+              if (a.status === "cancelled" || !a.phone) return false;
+              if (a.date > today) return true;
+              if (a.date === today) return toMin(a.time) >= nowMinsP;
+              return false;
+            }).sort(function(a, b) {
+              if (a.date < b.date) return -1;
+              if (a.date > b.date) return 1;
+              return toMin(a.time) - toMin(b.time);
+            });
+            var archived = appointments.filter(function(a) {
+              if (a.status === "cancelled" || !a.phone) return false;
+              if (a.date < today) return true;
+              if (a.date === today) return toMin(a.time) < nowMinsP;
+              return false;
+            }).sort(function(a, b) {
               if (a.date > b.date) return -1;
               if (a.date < b.date) return 1;
-              return a.time > b.time ? -1 : 1;
+              return toMin(b.time) - toMin(a.time);
             });
+            if (active.length === 0 && archived.length === 0) return null;
+            function renderRow(a, past) {
+              return (
+                <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f1f5f9", opacity: past ? 0.6 : 1 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, color: past ? "#94a3b8" : "#1e293b", fontSize: 14 }}>{a.patient}</div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                      {APT_TYPES[a.type] ? APT_TYPES[a.type].emoji + " " + APT_TYPES[a.type].label : a.type} · {fmtDate(a.date)} · {a.time}
+                    </div>
+                  </div>
+                  <a href={"https://wa.me/" + a.phone.replace(/\D/g, "")}
+                    target="_blank" rel="noreferrer"
+                    style={{ background: past ? "#f1f5f9" : "#dcfce7", border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, color: past ? "#64748b" : "#15803d", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                    <Ic n="wa" s={14} c={past ? "#64748b" : "#15803d"} /> {a.phone}
+                  </a>
+                </div>
+              );
+            }
             return (
               <div style={Object.assign({}, S.card, { marginTop: 14 })}>
-                <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 10 }}>📋 Pacientes ({sorted.length})</div>
-                {sorted.map(function(a) {
-                  return (
-                    <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f1f5f9" }}>
-                      <div>
-                        <div style={{ fontWeight: 600, color: "#1e293b", fontSize: 14 }}>{a.patient}</div>
-                        <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
-                          {APT_TYPES[a.type] ? APT_TYPES[a.type].emoji + " " + APT_TYPES[a.type].label : a.type} · {fmtDate(a.date)} · {a.time}
-                        </div>
-                      </div>
-                      <a href={"https://wa.me/" + a.phone.replace(/\D/g, "")}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ background: "#dcfce7", border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 13, color: "#15803d", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
-                        <Ic n="wa" s={14} c="#15803d" /> {a.phone}
-                      </a>
-                    </div>
-                  );
-                })}
+                {active.length > 0 && (
+                  <>
+                    <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 10 }}>📋 Próximas citas ({active.length})</div>
+                    {active.map(function(a) { return renderRow(a, false); })}
+                  </>
+                )}
+                {archived.length > 0 && (
+                  <>
+                    <div style={{ fontWeight: 700, color: "#94a3b8", fontSize: 13, marginTop: active.length > 0 ? 16 : 0, marginBottom: 8 }}>📁 Archivadas ({archived.length})</div>
+                    {archived.map(function(a) { return renderRow(a, true); })}
+                  </>
+                )}
               </div>
             );
           })()}
@@ -1264,6 +1315,13 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
                 style={Object.assign({}, S.saveBtn, { background: "#0891b2" })}>
                 <Ic n="edit" s={18} c="#fff" /> Editar datos
               </button>
+              <button className="tap" onClick={function() {
+                setExtendForm({ id: modal.apt.id, extraMin: "10" });
+                setModal({ type: "extend", apt: modal.apt });
+              }}
+                style={Object.assign({}, S.saveBtn, { background: "#f59e0b" })}>
+                <Ic n="clock" s={18} c="#fff" /> Alargar cita
+              </button>
               <button className="tap" onClick={function() { setModal({ type: "change", apt: modal.apt }); }}
                 style={Object.assign({}, S.saveBtn, { background: "#7c3aed" })}>
                 <Ic n="edit" s={18} c="#fff" /> Proponer cambio de hora
@@ -1307,6 +1365,43 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
               <button className="tap" onClick={handleEditSave}
                 style={Object.assign({}, S.saveBtn, { opacity: (!editForm.patient.trim() || !editForm.phoneNumber || !isValidPhone(editForm.phoneNumber)) ? 0.5 : 1 })}>
                 Guardar cambios
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: alargar cita */}
+      {modal && modal.type === "extend" && extendForm && (
+        <div style={S.overlay} onClick={function() { setModal(null); setExtendForm(null); }}>
+          <div style={S.modal} onClick={function(e) { e.stopPropagation(); }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={S.modalTitle}>Alargar cita</div>
+              <button onClick={function() { setModal(null); setExtendForm(null); }} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <Ic n="x" s={20} c="#94a3b8" />
+              </button>
+            </div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
+              <strong>{modal.apt.patient}</strong> · {APT_TYPES[modal.apt.type].label} · {modal.apt.time}
+            </div>
+            <Field label="Minutos extra a añadir">
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[5,10,15,20,30].map(function(m) {
+                  return (
+                    <button key={m} className="tap"
+                      onClick={function() { setExtendForm(function(p) { return Object.assign({}, p, { extraMin: String(m) }); }); }}
+                      style={{ padding: "10px 16px", borderRadius: 10, border: "1.5px solid " + (extendForm.extraMin === String(m) ? "#f59e0b" : "#e2e8f0"), background: extendForm.extraMin === String(m) ? "#fef3c7" : "#f8fafc", fontWeight: 700, fontSize: 15, color: extendForm.extraMin === String(m) ? "#92400e" : "#475569", cursor: "pointer" }}>
+                      +{m} min
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button className="tap" onClick={function() { setModal(null); setExtendForm(null); }} style={S.cancelBtn}>Cancelar</button>
+              <button className="tap" onClick={handleExtend}
+                style={Object.assign({}, S.saveBtn, { background: "#f59e0b" })}>
+                Confirmar
               </button>
             </div>
           </div>
