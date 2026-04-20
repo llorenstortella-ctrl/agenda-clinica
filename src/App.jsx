@@ -120,19 +120,23 @@ function deduplicateApts(apts) {
 // =============================================================================
 // LOGICA DE CONFLICTOS
 // =============================================================================
-function hasConflict(dayApts, timeStr, type) {
+function hasConflict(dayApts, timeStr, type, durs) {
   const s = toMin(timeStr);
+  // Usar duraciones pasadas o defaults
+  var d = getDurations(durs || {});
 
   function fisioBusy(a, b) {
     return dayApts.some(function(x) {
       if (x.status === "cancelled") return false;
+      // Usar duracion guardada en cada cita existente
+      var xD = getDurations({ fisio: x.durFisio, nesa: x.durNesa, combinadaFisio: x.durCombF, combinadaNesa: x.durCombN });
       if (x.type === "fisio") {
         const s2 = toMin(x.time);
-        return a < s2 + 50 && b > s2;
+        return a < s2 + xD.fisio && b > s2;
       }
       if (x.type === "combinada") {
         const s2 = toMin(x.time);
-        return a < s2 + 30 && b > s2;
+        return a < s2 + xD.combinadaFisio && b > s2;
       }
       return false;
     });
@@ -141,27 +145,28 @@ function hasConflict(dayApts, timeStr, type) {
   function nesaBusy(a, b) {
     return dayApts.some(function(x) {
       if (x.status === "cancelled") return false;
+      var xD = getDurations({ fisio: x.durFisio, nesa: x.durNesa, combinadaFisio: x.durCombF, combinadaNesa: x.durCombN });
       if (x.type === "nesa") {
         const s2 = toMin(x.time);
-        return a < s2 + 50 && b > s2;
+        return a < s2 + xD.nesa && b > s2;
       }
       if (x.type === "combinada") {
-        const s2 = toMin(x.time) + 30;
-        return a < s2 + 20 && b > s2;
+        const s2 = toMin(x.time) + xD.combinadaFisio;
+        return a < s2 + xD.combinadaNesa && b > s2;
       }
       return false;
     });
   }
 
   if (type === "fisio") {
-    return fisioBusy(s, s + 50) ? "El fisio no está disponible a esa hora." : null;
+    return fisioBusy(s, s + d.fisio) ? "El fisio no está disponible a esa hora." : null;
   }
   if (type === "nesa") {
-    return nesaBusy(s, s + 50) ? "La Nesa no está disponible a esa hora." : null;
+    return nesaBusy(s, s + d.nesa) ? "La Nesa no está disponible a esa hora." : null;
   }
   if (type === "combinada") {
-    if (fisioBusy(s, s + 30)) return "El fisio no está libre los primeros 30 min.";
-    if (nesaBusy(s + 30, s + 50)) return "La Nesa no está libre los últimos 20 min.";
+    if (fisioBusy(s, s + d.combinadaFisio)) return "El fisio no está libre los primeros " + d.combinadaFisio + " min.";
+    if (nesaBusy(s + d.combinadaFisio, s + d.combinadaFisio + d.combinadaNesa)) return "La Nesa no está libre los últimos " + d.combinadaNesa + " min.";
   }
   return null;
 }
@@ -237,6 +242,8 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
   }
 
   // Genera candidatos cada [dur] minutos dentro de cada hueco libre
+  // Ademas del inicio del hueco, tambien prueba desde el fin de cada bloque ocupado
+  // Esto garantiza que huecos que empiezan en medio del horario no se pierdan
   function validStarts(blocks, dur) {
     var out = [], seen = {};
     slots.forEach(function(slot) {
@@ -246,12 +253,25 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
       gaps.forEach(function(gap) {
         if (gap.end - gap.start < dur) return;
         var candidates = [];
+        // Paso 1: desde el inicio del hueco cada dur minutos
         var t = gap.start;
         while (t + dur <= gap.end) {
           candidates.push(t);
-          t += dur; // usar la duracion real como paso
+          t += dur;
         }
+        // Paso 2: el final del hueco - dur (para no perder el ultimo slot posible)
         if (gap.end - dur >= gap.start) candidates.push(gap.end - dur);
+        // Paso 3: desde el fin de cada bloque ocupado que cae dentro de este hueco
+        // Esto captura casos como: bloque 09:30-10:00, hueco desde 10:00
+        blocks.forEach(function(b) {
+          if (b.end >= gap.start && b.end <= gap.end) {
+            var t2 = b.end;
+            while (t2 + dur <= gap.end) {
+              candidates.push(t2);
+              t2 += dur;
+            }
+          }
+        });
         candidates.forEach(function(c) {
           if (c >= gap.start && c + dur <= gap.end && !seen[c]) {
             seen[c] = true;
@@ -306,12 +326,12 @@ function getSlots(dk, schedule, appointments, type, allDayDurations, defaultDura
   return out;
 }
 
-function nextAvailable(fromDk, type, schedule, appointments) {
+function nextAvailable(fromDk, type, schedule, appointments, dayDurations, durations) {
   for (let i = 0; i < 30; i++) {
     const d = parseD(fromDk);
     d.setDate(d.getDate() + i);
     const dk = dateKey(d);
-    const s  = getSlots(dk, schedule, appointments, type, {}, {});
+    const s  = getSlots(dk, schedule, appointments, type, dayDurations || {}, durations || {});
     if (s.length > 0) return { dk: dk, time: s[0] };
   }
   return null;
@@ -649,12 +669,28 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
         : (a.type === "nesa"  || a.type === "combinada");
       if (!show) return null;
 
+      // Usar duracion guardada en la cita, o la del dia, o el default
+      var dDay = getDurations((dayDurations || {})[a.date] || durations || {});
+      var aFisio = a.durFisio || dDay.fisio;
+      var aNesa  = a.durNesa  || dDay.nesa;
+      var aCombF = a.durCombF || dDay.combinadaFisio;
+      var aCombN = a.durCombN || dDay.combinadaNesa;
+
       let sMin = toMin(a.time);
-      let dur  = 50;
-      if (a.type === "combinada") {
-        if (col === "fisio") { dur = 30; }
-        else { sMin += 30; dur = 20; }
+      let dur;
+      if (a.type === "fisio") {
+        dur = aFisio;
+      } else if (a.type === "nesa") {
+        dur = aNesa;
+      } else if (a.type === "combinada") {
+        if (col === "fisio") {
+          dur = aCombF;
+        } else {
+          sMin += aCombF;
+          dur = aCombN;
+        }
       }
+
       const topIdx = tlArr.indexOf(sMin);
       if (topIdx < 0) return null;
 
@@ -672,10 +708,11 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
     if (!newAptNumber || !isValidPhone(newAptNumber)) { setConflict("El WhatsApp del paciente es obligatorio."); return; }
     const dk = newApt.date;
     // El fisio puede crear citas sin restriccion de horario — solo verifica conflictos reales
-    const err = hasConflict(appointments.filter(function(a) { return a.date === dk; }), newApt.time, newApt.type);
+    var dursForSave = getDurations((dayDurations || {})[dk] || durations || {});
+    const err = hasConflict(appointments.filter(function(a) { return a.date === dk; }), newApt.time, newApt.type, dursForSave);
     if (err) {
       setConflict(err);
-      setSugg(nextAvailable(dk, newApt.type, schedule, appointments));
+      setSugg(nextAvailable(dk, newApt.type, schedule, appointments, dayDurations, durations));
       return;
     }
 
@@ -706,7 +743,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
       // SEGUNDA VALIDACION ATOMICA: re-verificar con el estado mas reciente
       // Esto captura race conditions entre dos usuarios reservando a la vez
       var freshDayApts = prev.filter(function(a) { return a.date === aptToSave.date; });
-      var freshConflict = hasConflict(freshDayApts, aptToSave.time, aptToSave.type);
+      var freshConflict = hasConflict(freshDayApts, aptToSave.time, aptToSave.type, dursAtSave);
       if (freshConflict) {
         conflictFound = true;
         return prev; // No anadir — slot ya ocupado
@@ -735,7 +772,8 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
     if (!changeForm.date || !changeForm.time) return;
     const dk = changeForm.date;
     const otherApts = appointments.filter(function(a) { return a.date === dk && a.id !== apt.id; });
-    const err = hasConflict(otherApts, changeForm.time, apt.type);
+    var dursForChange = getDurations((dayDurations || {})[changeForm.date] || durations || {});
+    const err = hasConflict(otherApts, changeForm.time, apt.type, dursForChange);
     if (err) { showToast(err, false); return; }
 
     const newPropToken = uid();
@@ -747,7 +785,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
     setApts(function(prev) {
       // Re-verificar que el nuevo slot sigue libre (estado fresco)
       var freshOther = prev.filter(function(a) { return a.date === propChangeDate && a.id !== aptId2; });
-      var freshErr = hasConflict(freshOther, propChangeTime, aptType2);
+      var freshErr = hasConflict(freshOther, propChangeTime, aptType2, dursForChange);
       if (freshErr) return prev; // Si ya no esta libre, no guardar el cambio
       return prev.map(function(a) {
         if (a.id !== aptId2) return a;
@@ -1044,7 +1082,7 @@ function FisioApp({ appointments, setApts, schedule, setSched, durations, setDur
                   var allTimes = [];
                   for (var m = 360; m + durStep <= 1380; m += durStep) { allTimes.push(toTime(m)); }
                   avail = allTimes.filter(function(t) {
-                    return !hasConflict(allDayApts, t, newApt.type);
+                    return !hasConflict(allDayApts, t, newApt.type, dursForDay);
                   });
                 }
                 if (!hasSched) {
@@ -1422,7 +1460,7 @@ function PatientPortal({ appointments, setApts, schedule, dayDurations, duration
     setApts(function(prev) {
       // SEGUNDA VALIDACION ATOMICA en el portal
       var freshDayApts = prev.filter(function(a) { return a.date === aptToBook.date; });
-      var freshConflict = hasConflict(freshDayApts, aptToBook.time, aptToBook.type);
+      var freshConflict = hasConflict(freshDayApts, aptToBook.time, aptToBook.type, dursAtBook);
       if (freshConflict) {
         conflictFound = true;
         return prev;
