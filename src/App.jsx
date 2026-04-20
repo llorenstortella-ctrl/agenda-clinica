@@ -1861,6 +1861,55 @@ function ConfirmChangePage({ aptId, propId, appointments, setApts }) {
 }
 
 // =============================================================================
+// EDITOR DE DURACIONES — estado local para permitir borrar y reescribir
+// =============================================================================
+function DurationEditor({ durations, setDurations }) {
+  var durConfig = getDurations(durations);
+  var initVals = {
+    fisio:          String(durConfig.fisio),
+    nesa:           String(durConfig.nesa),
+    combinadaFisio: String(durConfig.combinadaFisio),
+    combinadaNesa:  String(durConfig.combinadaNesa),
+  };
+  var [localVals, setLocalVals] = useState(initVals);
+  var items = [
+    { key: "fisio",          label: "Fisio",             emoji: "💆" },
+    { key: "nesa",           label: "Nesa",              emoji: "⚡" },
+    { key: "combinadaFisio", label: "Combinada (Fisio)", emoji: "✨" },
+    { key: "combinadaNesa",  label: "Combinada (Nesa)",  emoji: "✨" },
+  ];
+  return (
+    <div style={Object.assign({}, S.card, { marginBottom: 14 })}>
+      <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, marginBottom: 14 }}>⏱ Duración de las citas</div>
+      {items.map(function(item) {
+        return (
+          <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, color: "#334155", fontWeight: 500 }}>{item.emoji} {item.label}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="text" inputMode="numeric" pattern="[0-9]*"
+                value={localVals[item.key]}
+                onChange={function(e) {
+                  var raw = e.target.value.replace(/[^0-9]/g, "");
+                  setLocalVals(function(p) { var n=Object.assign({},p); n[item.key]=raw; return n; });
+                }}
+                onBlur={function() {
+                  var val = parseInt(localVals[item.key], 10);
+                  if (!val || val < 5) val = DEFAULT_DURATIONS[item.key] || 50;
+                  if (val > 180) val = 180;
+                  setLocalVals(function(p) { var n=Object.assign({},p); n[item.key]=String(val); return n; });
+                  setDurations(function(p) { var n=Object.assign({},p); n[item.key]=val; _slotsCache={}; return n; });
+                }}
+                style={{ width: 64, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "8px 10px", fontSize: 15, color: "#1e293b", textAlign: "center" }} />
+              <span style={{ fontSize: 13, color: "#94a3b8" }}>min</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// =============================================================================
 // AJUSTES — horario por dia
 // =============================================================================
 function SettingsView({ schedule, setSched, durations, setDurations, onBack, initialDate }) {
@@ -1980,51 +2029,7 @@ function SettingsView({ schedule, setSched, durations, setDurations, onBack, ini
       </div>
 
       {/* CONFIGURACION DE DURACIONES */}
-      <div style={Object.assign({}, S.card, { marginBottom: 14 })}>
-        <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, marginBottom: 14 }}>⏱ Duración de las citas</div>
-        {[
-          { key: "fisio",          label: "Fisio",            emoji: "💆" },
-          { key: "nesa",           label: "Nesa",             emoji: "⚡" },
-          { key: "combinadaFisio", label: "Combinada (Fisio)",emoji: "✨" },
-          { key: "combinadaNesa",  label: "Combinada (Nesa)", emoji: "✨" },
-        ].map(function(item) {
-          return (
-            <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 14, color: "#334155", fontWeight: 500 }}>{item.emoji} {item.label}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="text" inputMode="numeric" pattern="[0-9]*"
-                  value={durConfig[item.key]}
-                  onChange={function(e) {
-                    // Permitir borrar y escribir libremente
-                    var raw = e.target.value.replace(/[^0-9]/g, "");
-                    var val = parseInt(raw, 10);
-                    setDurations(function(prev) {
-                      var n = Object.assign({}, prev);
-                      // Si esta vacio o invalido, guardar 0 temporalmente para que se pueda escribir
-                      n[item.key] = isNaN(val) ? "" : val;
-                      _slotsCache = {};
-                      return n;
-                    });
-                  }}
-                  onBlur={function(e) {
-                    // Al salir del campo, validar y restaurar si hace falta
-                    var val = parseInt(e.target.value, 10);
-                    if (!val || val < 5) val = DEFAULT_DURATIONS[item.key] || 50;
-                    if (val > 180) val = 180;
-                    setDurations(function(prev) {
-                      var n = Object.assign({}, prev);
-                      n[item.key] = val;
-                      _slotsCache = {};
-                      return n;
-                    });
-                  }}
-                  style={{ width: 64, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "8px 10px", fontSize: 15, color: "#1e293b", textAlign: "center" }} />
-                <span style={{ fontSize: 13, color: "#94a3b8" }}>min</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <DurationEditor durations={durations} setDurations={setDurations} />
 
       <div style={Object.assign({}, S.card, { marginBottom: 90 })}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
