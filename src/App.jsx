@@ -1992,30 +1992,31 @@ function SettingsView({ schedule, setSched, durations, setDurations, onBack, ini
             <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
               <div style={{ fontSize: 14, color: "#334155", fontWeight: 500 }}>{item.emoji} {item.label}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="number" min="10" max="120" step="5"
+                <input type="text" inputMode="numeric" pattern="[0-9]*"
                   value={durConfig[item.key]}
                   onChange={function(e) {
+                    // Permitir borrar y escribir libremente
+                    var raw = e.target.value.replace(/[^0-9]/g, "");
+                    var val = parseInt(raw, 10);
+                    setDurations(function(prev) {
+                      var n = Object.assign({}, prev);
+                      // Si esta vacio o invalido, guardar 0 temporalmente para que se pueda escribir
+                      n[item.key] = isNaN(val) ? "" : val;
+                      _slotsCache = {};
+                      return n;
+                    });
+                  }}
+                  onBlur={function(e) {
+                    // Al salir del campo, validar y restaurar si hace falta
                     var val = parseInt(e.target.value, 10);
-                    if (isNaN(val)) return; // no borrar
-                    if (val < 10) val = 10;
-                    if (val > 120) val = 120;
+                    if (!val || val < 5) val = DEFAULT_DURATIONS[item.key] || 50;
+                    if (val > 180) val = 180;
                     setDurations(function(prev) {
                       var n = Object.assign({}, prev);
                       n[item.key] = val;
                       _slotsCache = {};
                       return n;
                     });
-                  }}
-                  onBlur={function(e) {
-                    // Si queda vacio al salir, restaurar valor por defecto
-                    var val = parseInt(e.target.value, 10);
-                    if (!val || val < 10) {
-                      setDurations(function(prev) {
-                        var n = Object.assign({}, prev);
-                        n[item.key] = DEFAULT_DURATIONS[item.key] || 50;
-                        return n;
-                      });
-                    }
                   }}
                   style={{ width: 64, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "8px 10px", fontSize: 15, color: "#1e293b", textAlign: "center" }} />
                 <span style={{ fontSize: 13, color: "#94a3b8" }}>min</span>
